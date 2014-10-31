@@ -89,7 +89,7 @@
 
 ;;;; service life cycle methods
 
-(defgeneric start (service &key daemonize)
+(defgeneric start (service &key (daemonize t))
   (:documentation "Called to start up SERVICE.")
 
   (:method ((service-name symbol) &rest start-args)
