@@ -1,0 +1,39 @@
+= cl-service
+Marco Baringer
+<mb@bese.it>
+
+A PROTOTYPE (I can not stress that word enough) library for running
+lisp applications following the "conventions" (ha ha ha) of unix
+services.
+
+== Getting Started
+
+Checkout the code into your local-projects directory (since this isn't on quicklisp):
+
+----
+$ cd ~/quicklisp/local-projects/; git clone https://github.com/segv/cl-service;
+----
+
+Somewhere in your code create a service class:
+
+----
+(defclass my-package::service (cl-service:service)
+  ()
+  (:default-initargs
+   :name "THE NAME OF MY SERVICE"
+   :pid-filename "/var/run/my-service.pid"
+   :control-socket-filename "/var/run/my-service.socket"
+   :error-handler 'cl-service:log-and-die))
+----
+
+In your start-up script (which is not provided by cl-service) call 
+
+----
+(cl-service:start 'my-package::service)
+----
+
+Send requests to the service via the control socket:
+
+----
+$ echo -e 'GET /stop HTTP/1.1\r\n\r\n' | socat unix-connect:/var/run/my-service.socket
+----
