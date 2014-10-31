@@ -24,7 +24,7 @@
                             to send and receive control commands.")
    (error-handler :reader error-handler
                   :initarg :error-handler
-                  :initform 'pass-errors
+                  :initform 'log-and-die
                   :documentation "A function which will be called, in an error handler established via
                   handler-bind, when a service related method signals, and does not handle, a
                   condition of type error.
