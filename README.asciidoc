@@ -37,3 +37,15 @@ Send requests to the service via the control socket:
 ----
 $ echo -e 'GET /stop HTTP/1.1\r\n\r\n' | socat unix-connect:/var/run/my-service.socket
 ----
+
+== NOTES
+
+Other than the fact that this whole thing is an EXPERIMENT and I have
+no idea if the idea itself, let alone this particular implementation
+of the idea, is worth following, there are some especially annoying
+things about this library:
+
+. It patches hunchentoot and usocket to be able to run a hunchentoot
+acceptor on a unix domain socket. see the files
++src/monkey-patch/hunchentoot.lisp+ and
++src/monkey-patch/usocket.lisp+.
