@@ -1,11 +1,12 @@
 (in-package :cl-service)
 
 (defun send-command (socket-filename command &rest arguments)
-  (let* ((stream (flexi-streams:make-flexi-stream (chunga:make-chunked-stream
-                                                   (usocket:local-socket-connect (namestring socket-filename)
-                                                                                 :element-type '(unsigned-byte 8)))
-                                                  :external-format (flexi-streams:make-external-format :latin-1
-                                                                                                       :eol-style :lf))))
+  (let* ((socket (handler-bind ((sb-bsd-sockets:connection-refused-error (lambda (e)
+                                                                           (format *standard-output* "{\"status\":\"down\",\"message\":\"can not connect to control socket\"}")
+                                                                           (sb-ext:exit :code 0))))
+                   (usocket:local-socket-connect (namestring socket-filename) :element-type '(unsigned-byte 8))))
+         (external-format (flexi-streams:make-external-format :latin-1 :eol-style :lf))
+         (stream (flexi-streams:make-flexi-stream (chunga:make-chunked-stream socket) :external-format external-format)))
     (unwind-protect
          (let ((drakma:*header-stream* nil))
            (multiple-value-bind (body status)
