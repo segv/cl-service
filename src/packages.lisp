@@ -16,4 +16,6 @@
            #:log-and-die
            #:just-die
            #:do-nothing
-           #:abort-method))
+           #:abort-method
+
+           #:send-command))
