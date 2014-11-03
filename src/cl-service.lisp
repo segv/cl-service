@@ -97,9 +97,6 @@
 
   (:method  ((service service) &key (daemonize t))
     (with-service-error-handler (service)
-      ;; daemonize.(when service.(daemonize-process))
-      ;; ==
-      ;; (when daemonize service.(daemonize-process))
       (when daemonize
         (daemonize-process service))
       (acquire-pid-file-lock service)
@@ -107,7 +104,6 @@
 
       (on-start service)
 
-      ;; service.(create-control-acceptor daemonize).(start-control-acceptor)
       (start-control-acceptor (create-control-acceptor service daemonize)))))
 
 (defmethod daemonize-process ((service service))
