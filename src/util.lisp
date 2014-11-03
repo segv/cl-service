@@ -4,9 +4,6 @@
   (let* ((buffer (flexi-streams:string-to-octets (apply #'format nil control arguments) :external-format :utf-8)))
     (sb-posix:write fd (sb-sys:vector-sap buffer) (length buffer))))
 
-(defun hash (&rest keys-and-values)
-  (alexandria:plist-hash-table keys-and-values :test 'equal))
-
 (defun response-json (&rest keys-and-values)
   (setf (hunchentoot:content-type*) "application/json"
         (hunchentoot:return-code*) 200)
