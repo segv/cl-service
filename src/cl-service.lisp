@@ -36,8 +36,8 @@
 
    ;; internal slots. note that none of these have an :initarg.
 
-   (control-acceptor :reader control-acceptor
-                     :initform nil)
+   (control-server :accessor control-server
+                   :initform nil)
    (log-stream   :accessor log-stream
                  :initform nil)
    (pid :accessor pid
@@ -61,8 +61,9 @@
 
 (defgeneric on-status (service)
   (:method ((service service))
-    (list :status "up"
-          :pid (pid service))))
+    (list "status" "up"
+          "pid" (pid service)
+          "control-socket" (namestring (control-socket-filename service)))))
 
 
 ;;;; error handling "framework"
@@ -108,7 +109,7 @@
 
       (on-start service)
 
-      (start-control-acceptor (create-control-acceptor service daemonize)))))
+      (start-control-server service daemonize))))
 
 (defmethod daemonize-process ((service service))
   (sb-daemon:daemonize :pidfile nil
@@ -128,13 +129,30 @@
           *error-output* (redirected-stream-for *error-output*)
           *trace-output* (redirected-stream-for *trace-output*))))
 
-(defmethod create-control-acceptor ((service service) daemonize)
-  (setf (slot-value service 'control-acceptor)
-        (make-instance (if daemonize
-                           'blocking-control-acceptor
-                           'background-control-acceptor)
-                       :service service
-                       :socket-filename (ensure-directories-exist (control-socket-filename service)))))
+(defmethod start-control-server ((service service) daemonize)
+  (declare (ignore daemonize))
+  (let ((control-socket-pathname (ensure-directories-exist (control-socket-filename service))))
+    (when (probe-file control-socket-pathname)
+      (delete-file control-socket-pathname))
+    (run-json-server (namestring control-socket-pathname)
+                     (lambda (command)
+                       (process-json-command service command))))
+  service)
+
+(defmethod process-json-command ((service service) command)
+  (assert (= 1 (length command)) (command))
+  (alexandria:switch ((aref command 0) :test #'string=)
+                     ("status"
+                      (alexandria:plist-hash-table (on-status service)))
+                     ("stop"
+                      (sb-thread:make-thread (lambda ()
+                                               (on-stop service)
+                                               (sb-ext:exit :code 0 :abort nil)))
+                      (values (alexandria:plist-hash-table (list "status" "shutting-down")) t))
+                     ("kill"
+                      (sb-ext:exit :code 0 :abort t))
+                     (t
+                      (alexandria:plist-hash-table (list "status" "unknown-command" "command-name" (aref command 0))))))
 
 (defgeneric open-log-stream (service))
 
@@ -189,77 +207,42 @@
       service)))
 
 
-;;;; the control http server
+;;;; The super simple control server
 
-(defclass control-acceptor (local-socket-acceptor hunchentoot:acceptor)
-  ((service :reader service :initarg :service)))
-
-(defun response-json (&rest keys-and-values)
-  (setf (hunchentoot:content-type*) "application/json"
-        (hunchentoot:return-code*) 200)
-  (loop with ht = (make-hash-table :test 'equal)
-        for (key value) on keys-and-values by #'cddr
-        do (setf (gethash (etypecase key
-                            (string key)
-                            (keyword (string-downcase (symbol-name key))))
-                          ht)
-                 value)
-        finally (return (with-output-to-string (json)
-                          (yason:encode ht json)))))
-
-(defmethod hunchentoot:acceptor-dispatch-request ((acceptor control-acceptor) (request hunchentoot:request))
-  (let ((service (service acceptor)))
-    (alexandria:switch ((hunchentoot:script-name request) :test #'string=)
-      ("/stop"
-       (sb-thread:make-thread (lambda ()
-                                (on-stop service)
-                                (hunchentoot:stop acceptor :soft t)
-                                (close-log-stream service)
-                                (sb-ext:exit :code 0 :abort nil)))
-       (response-json :status "ok"))
-      ("/status"
-       (apply #'response-json (on-status service)))
-      ("/kill"
-       (let* ((hard (hunchentoot:parameter "hard" request))
-              (hard (cond
-                      ((null hard)
-                       nil)
-                      ((and (stringp hard)
-                            (member hard '("false" "no")))
-                       nil)
-                      (t
-                       t))))
-         (if hard
-             (sb-ext:exit :code 2 :abort t)
-             (progn
-               (sb-thread:make-thread (lambda ()
-                                        (on-kill service)
-                                        (sb-ext:exit :code 2 :abort t)))
-               (response-json :status "ok")))))
-      (t
-       (setf (hunchentoot:return-code*) 404)
-       (response-json :code "command-not-found"
-                      :message (format nil "No command name ~S found." (hunchentoot:script-name request)))))))
-
-(defgeneric start-control-acceptor (acceptor))
-
-(defmethod start-control-acceptor :before ((acceptor control-acceptor))
-  (when (probe-file (control-socket-filename (service acceptor)))
-    (delete-file (control-socket-filename (service acceptor)))))
-
-(defclass background-control-acceptor (control-acceptor)
-  ()
-  (:default-initargs :taskmaster (make-instance 'hunchentoot:one-thread-per-connection-taskmaster)))
-
-(defmethod start-control-acceptor ((acceptor background-control-acceptor))
-  (hunchentoot:start acceptor)
-  (format *standard-output* "Started Control Acceptor.~%"))
-
-(defclass blocking-control-acceptor (control-acceptor)
-  ()
-  (:default-initargs :taskmaster (make-instance 'hunchentoot:single-threaded-taskmaster)))
-
-(defmethod start-control-acceptor ((acceptor blocking-control-acceptor))
-  (format *trace-output* "Starting Control Acceptor.~%")
-  ;; since we're running a single threaded taskmaster, this call does not return.
-  (hunchentoot:start acceptor))
+(defun run-json-server (socket-filename handler)
+  (let ((server-socket (make-instance 'sb-bsd-sockets:local-socket :type :stream)))
+    (sb-bsd-sockets:socket-bind server-socket socket-filename)
+    (sb-bsd-sockets:socket-listen server-socket 256)
+    (sb-thread:make-thread
+     (lambda ()
+       (loop
+         with shutdown = nil
+         until shutdown
+         for socket = (sb-bsd-sockets:socket-accept server-socket)
+         for binary-stream = (sb-bsd-sockets:socket-make-stream socket
+                                                                :input t
+                                                                :output t
+                                                                :buffering :full
+                                                                :timeout 1
+                                                                :auto-close t
+                                                                :element-type '(unsigned-byte 8))
+         for text-stream = (flexi-streams:make-flexi-stream binary-stream :external-format :utf-8)
+         do (unwind-protect
+                 (handler-case
+                     (let ((input (yason:parse text-stream
+                                               :object-as :hash-table
+                                               :json-arrays-as-vectors t
+                                               :json-booleans-as-symbols nil
+                                               :json-nulls-as-keyword t
+                                               :object-key-fn 'identity)))
+                       (multiple-value-bind (output done-p)
+                           (funcall handler input)
+                         (setf shutdown done-p)
+                         (yason:encode output text-stream)))
+                   (error (e)
+                     (yason:with-output (text-stream)
+                       (yason:with-object ()
+                         (yason:encode-object-element "status" "error")
+                         (yason:encode-object-element "error" (princ-to-string e)))))))
+            (close text-stream)))
+     :name "CL-SERVICE control server")))
