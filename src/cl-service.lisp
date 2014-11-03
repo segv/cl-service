@@ -217,8 +217,8 @@
                (response-json :status "ok")))))
       (t
        (setf (hunchentoot:return-code*) 404)
-       (json :code "command-not-found"
-             :message (format nil "No command name ~S found." (hunchentoot:script-name request)))))))
+       (response-json :code "command-not-found"
+                      :message (format nil "No command name ~S found." (hunchentoot:script-name request)))))))
 
 (defgeneric start-control-acceptor (acceptor))
 
