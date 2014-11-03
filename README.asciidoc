@@ -35,7 +35,7 @@ In your start-up script (which is not provided by cl-service) call
 Send requests to the service via the control socket:
 
 ----
-$ echo -e 'GET /stop HTTP/1.1\r\n\r\n' | socat unix-connect:/var/run/my-service.socket
+$ echo -e 'GET /stop HTTP/1.1\r\n\r\n' | socat unix-connect:/var/run/my-service.socket STDIO
 ----
 
 == NOTES
