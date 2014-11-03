@@ -234,7 +234,6 @@
              (progn
                (sb-thread:make-thread (lambda ()
                                         (on-kill service)
-                                        (hunchentoot:stop acceptor :soft nil)
                                         (sb-ext:exit :code 2 :abort t)))
                (response-json :status "ok")))))
       (t
