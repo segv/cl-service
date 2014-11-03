@@ -35,8 +35,10 @@ In your start-up script (which is not provided by cl-service) call
 Send requests to the service via the control socket:
 
 ----
-$ echo -e 'GET /stop HTTP/1.1\r\n\r\n' | socat unix-connect:/var/run/my-service.socket STDIO
+$ echo '["stop"]' | socat unix-connect:/var/run/my-service.socket STDIO
 ----
+
+Replace +"stop"+ with +"kill"+ or +"status"+.
 
 == NOTES
 
@@ -46,9 +48,4 @@ of the idea, is worth following, there are some especially annoying
 things about this library:
 
 . Very very sbcl-only.
-
-. It patches hunchentoot and usocket to be able to run a hunchentoot
-acceptor on a unix domain socket. see the files
-+src/monkey-patch/hunchentoot.lisp+ and
-+src/monkey-patch/usocket.lisp+.
 
