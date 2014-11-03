@@ -141,23 +141,30 @@
       (close (log-stream service)))))
 
 (define-condition service-already-running (error)
-  ((service :initarg :service))
+  ((service :initarg :service)
+   (other-pid :initarg :other-pid))
   (:report (lambda (e s)
              (let ((pidfile (pid-filename (slot-value e 'service)))
                    (name    (name (slot-value e 'service))))
                (format s "Can not lock pidfile at ~S. ~A is already running (with pid ~A).~%"
                        pidfile
                        name
-                       (alexandria:read-file-into-string pidfile :external-format :utf-8))))))
+                       (slot-value e 'other-pid))))))
 
 (defgeneric acquire-pid-file-lock (service)
   (:method ((service service))
     (let* ((filename (namestring (ensure-directories-exist (pid-filename service))))
-           (fd (sb-posix:open filename (logior sb-posix:o-creat sb-posix:o-wronly) #o644)))
+           (fd (sb-posix:open filename (logior sb-posix:o-creat sb-posix:o-wronly) #o644))
+           (flock (make-instance 'sb-posix:flock :type sb-posix:f-wrlck
+                                                 :whence sb-posix:seek-set
+                                                 :start 0
+                                                 :len 0)))
       (handler-case
-          (sb-posix:lockf fd sb-posix:f-tlock 0)
+          (sb-posix:fcntl fd sb-posix:f-setlk flock)
         (sb-posix:syscall-error ()
           (let ((e (make-condition 'service-already-running :service service)))
+            (sb-posix:fcntl fd sb-posix:f-getlk flock)
+            (setf (slot-value e 'other-pid) (sb-posix:flock-pid flock))
             (restart-case
                 (error e)
               (log-and-die ()
