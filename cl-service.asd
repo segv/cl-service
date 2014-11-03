@@ -5,12 +5,10 @@
                               :components ((:file "usocket")
                                            (:file "hunchentoot")))
                              (:file "packages")
-                             (:file "util" :depends-on ("packages"))
                              (:file "local-socket-acceptor" :depends-on (:monkey-patch
                                                                          "packages"))
                              (:file "cl-service" :depends-on (:monkey-patch
                                                               "packages"
-                                                              "util"
                                                               "local-socket-acceptor"))
                              (:file "client" :depends-on (:monkey-patch
                                                           "packages"))))))

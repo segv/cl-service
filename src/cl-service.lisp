@@ -181,13 +181,31 @@
                 (sb-ext:exit :code 75 :abort nil))))))
       (sb-posix:ftruncate fd 0)
       (sb-posix:lseek fd 0 sb-posix:seek-set)
-      (binwrite fd "~D" (sb-posix:getpid)))))
+
+      (let* ((string (princ-to-string (sb-posix:getpid)))
+             (buffer (flexi-streams:string-to-octets string :external-format :utf-8)))
+        (sb-posix:write fd (sb-sys:vector-sap buffer) (length buffer)))
+
+      service)))
 
 
 ;;;; the control http server
 
 (defclass control-acceptor (local-socket-acceptor hunchentoot:acceptor)
   ((service :reader service :initarg :service)))
+
+(defun response-json (&rest keys-and-values)
+  (setf (hunchentoot:content-type*) "application/json"
+        (hunchentoot:return-code*) 200)
+  (loop with ht = (make-hash-table :test 'equal)
+        for (key value) on keys-and-values by #'cddr
+        do (setf (gethash (etypecase key
+                            (string key)
+                            (keyword (string-downcase (symbol-name key))))
+                          ht)
+                 value)
+        finally (return (with-output-to-string (json)
+                          (yason:encode ht json)))))
 
 (defmethod hunchentoot:acceptor-dispatch-request ((acceptor control-acceptor) (request hunchentoot:request))
   (let ((service (service acceptor)))
