@@ -89,13 +89,13 @@
 
 ;;;; service life cycle methods
 
-(defgeneric start (service &key (daemonize t))
+(defgeneric start (service &key daemonize)
   (:documentation "Called to start up SERVICE.")
 
   (:method ((service-name symbol) &rest start-args)
     (apply #'start (make-instance service-name) start-args))
 
-  (:method  ((service service) &key daemonize)
+  (:method  ((service service) &key (daemonize t))
     (with-service-error-handler (service)
       ;; daemonize.(when service.(daemonize-process))
       ;; ==
