@@ -142,17 +142,17 @@
 (defmethod process-json-command ((service service) command)
   (assert (= 1 (length command)) (command))
   (alexandria:switch ((aref command 0) :test #'string=)
-                     ("status"
-                      (alexandria:plist-hash-table (on-status service)))
-                     ("stop"
-                      (sb-thread:make-thread (lambda ()
-                                               (on-stop service)
-                                               (sb-ext:exit :code 0 :abort nil)))
-                      (values (alexandria:plist-hash-table (list "status" "shutting-down")) t))
-                     ("kill"
-                      (sb-ext:exit :code 0 :abort t))
-                     (t
-                      (alexandria:plist-hash-table (list "status" "unknown-command" "command-name" (aref command 0))))))
+    ("status"
+     (alexandria:plist-hash-table (on-status service)))
+    ("stop"
+     (sb-thread:make-thread (lambda ()
+                              (on-stop service)
+                              (sb-ext:exit :code 0 :abort nil)))
+     (values (alexandria:plist-hash-table (list "status" "shutting-down")) t))
+    ("kill"
+     (sb-ext:exit :code 0 :abort t))
+    (t
+     (alexandria:plist-hash-table (list "status" "unknown-command" "command-name" (aref command 0))))))
 
 (defgeneric open-log-stream (service))
 
