@@ -39,7 +39,10 @@
    (control-acceptor :reader control-acceptor
                      :initform nil)
    (log-stream   :accessor log-stream
-                 :initform nil)))
+                 :initform nil)
+   (pid :accessor pid
+        :initform nil
+        :documentation "PID of the parent process.")))
 
 
 ;;;; standard event handlers.
@@ -59,7 +62,7 @@
 (defgeneric on-status (service)
   (:method ((service service))
     (list :status "up"
-          :pid (parse-integer (alexandria:read-file-into-string (pid-filename service))))))
+          :pid (pid service))))
 
 
 ;;;; error handling "framework"
@@ -99,6 +102,7 @@
     (with-service-error-handler (service)
       (when daemonize
         (daemonize-process service))
+      (setf (pid service) (sb-posix:getpid))
       (acquire-pid-file-lock service)
       (redirect-io-streams service daemonize)
 
