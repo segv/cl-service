@@ -10,16 +10,16 @@
                  :documentation "A string naming this service. Used only to generate human readable
                  debug/log messages, the value of this slot will only be printed, it will never be
                  used as a key or anything similar.")
-   (pid-filename :reader pid-filename
-                 :initarg :pid-filename
+   (pid-pathname :reader pid-pathname
+                 :initarg :pid-pathname
                  :documentation "The name, a pathname designator, of the file the service should write
                  its PID to.
 
                  A lock on this same file will be used to ensure that there is only one service
                  running on a given machine. This means that two services will happily start up if
                  they are using different pid files.")
-   (control-socket-filename :reader control-socket-filename
-                            :initarg :control-socket-filename
+   (control-socket-pathname :reader control-socket-pathname
+                            :initarg :control-socket-pathname
                             :documentation "The name, a pathname designator, of the socket file used
                             to send and receive control commands.")
    (error-handler :reader error-handler
@@ -65,7 +65,7 @@
   (:method ((service service))
     (list "status" "up"
           "pid" (pid service)
-          "control-socket" (namestring (control-socket-filename service)))))
+          "control-socket" (namestring (control-socket-pathname service)))))
 
 (defgeneric on-reload (service)
   (:method ((service service))
@@ -138,7 +138,7 @@
           *trace-output* (redirected-stream-for *trace-output*))))
 
 (defmethod start-control-server ((service service))
-  (let ((control-socket-pathname (ensure-directories-exist (control-socket-filename service))))
+  (let ((control-socket-pathname (ensure-directories-exist (control-socket-pathname service))))
     (when (probe-file control-socket-pathname)
       (delete-file control-socket-pathname))
     (setf (control-server-thread service)
@@ -180,7 +180,7 @@
              do (when (eql :quit signal)
                   (return nil))
              do (let ((socket (make-instance 'sb-bsd-sockets:local-socket :type :stream)))
-                  (sb-bsd-sockets:socket-connect socket (namestring (control-socket-filename service)))
+                  (sb-bsd-sockets:socket-connect socket (namestring (control-socket-pathname service)))
                   (unwind-protect
                        (write-string (ecase signal
                                        ((#.sb-posix:sigabrt #.sb-posix:sigterm)
@@ -219,7 +219,7 @@
   ((service :initarg :service)
    (other-pid :initarg :other-pid))
   (:report (lambda (e s)
-             (let ((pidfile (pid-filename (slot-value e 'service)))
+             (let ((pidfile (pid-pathname (slot-value e 'service)))
                    (name    (name (slot-value e 'service))))
                (format s "Can not lock pidfile at ~S. ~A is already running (with pid ~A).~%"
                        pidfile
@@ -228,7 +228,7 @@
 
 (defgeneric acquire-pid-file-lock (service)
   (:method ((service service))
-    (let* ((filename (namestring (ensure-directories-exist (pid-filename service))))
+    (let* ((filename (namestring (ensure-directories-exist (pid-pathname service))))
            (fd (sb-posix:open filename (logior sb-posix:o-creat sb-posix:o-wronly) #o644))
            (flock (make-instance 'sb-posix:flock :type sb-posix:f-wrlck
                                                  :whence sb-posix:seek-set
