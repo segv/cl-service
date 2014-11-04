@@ -36,8 +36,10 @@
 
    ;; internal slots. note that none of these have an :initarg.
 
-   (control-server :accessor control-server
-                   :initform nil)
+   (control-server-thread :accessor control-server-thread)
+   (signal-queue :accessor signal-queue
+                 :initform (make-instance 'chanl:unbounded-channel))
+   (signal-handler-thread :accessor signal-handler-thread)
    (log-stream   :accessor log-stream
                  :initform nil)
    (pid :accessor pid
@@ -64,6 +66,10 @@
     (list "status" "up"
           "pid" (pid service)
           "control-socket" (namestring (control-socket-filename service)))))
+
+(defgeneric on-reload (service)
+  (:method ((service service))
+    t))
 
 
 ;;;; error handling "framework"
@@ -93,13 +99,13 @@
 
 ;;;; service life cycle methods
 
-(defgeneric start (service &key daemonize)
+(defgeneric start (service &key daemonize install-signal-handlers)
   (:documentation "Called to start up SERVICE.")
 
   (:method ((service-name symbol) &rest start-args)
     (apply #'start (make-instance service-name) start-args))
 
-  (:method  ((service service) &key (daemonize t))
+  (:method  ((service service) &key (daemonize t) (install-signal-handlers t))
     (with-service-error-handler (service)
       (when daemonize
         (daemonize-process service))
@@ -109,7 +115,9 @@
 
       (on-start service)
 
-      (start-control-server service daemonize))))
+      (start-control-server service)
+      (when install-signal-handlers
+        (install-signal-handlers service)))))
 
 (defmethod daemonize-process ((service service))
   (sb-daemon:daemonize :pidfile nil
@@ -129,14 +137,16 @@
           *error-output* (redirected-stream-for *error-output*)
           *trace-output* (redirected-stream-for *trace-output*))))
 
-(defmethod start-control-server ((service service) daemonize)
-  (declare (ignore daemonize))
+(defmethod start-control-server ((service service))
   (let ((control-socket-pathname (ensure-directories-exist (control-socket-filename service))))
     (when (probe-file control-socket-pathname)
       (delete-file control-socket-pathname))
-    (run-json-server (namestring control-socket-pathname)
-                     (lambda (command)
-                       (process-json-command service command))))
+    (setf (control-server-thread service)
+          (sb-thread:make-thread (lambda ()
+                                   (run-json-server (namestring control-socket-pathname)
+                                                    (lambda (command)
+                                                      (process-json-command service command))))
+                                 :name "CL-SERVICE control server")))
   service)
 
 (defmethod process-json-command ((service service) command)
@@ -147,12 +157,55 @@
     ("stop"
      (sb-thread:make-thread (lambda ()
                               (on-stop service)
+                              (chanl:send (signal-queue service) :quit)
                               (sb-ext:exit :code 0 :abort nil)))
      (values (alexandria:plist-hash-table (list "status" "shutting-down")) t))
     ("kill"
      (sb-ext:exit :code 0 :abort t))
+    ("reload"
+     (on-reload service)
+     (alexandria:plist-hash-table (list "status" "ok")))
+    ("create-swank-server"
+     (alexandria:plist-hash-table (list "status" "ok")))
     (t
      (alexandria:plist-hash-table (list "status" "unknown-command" "command-name" (aref command 0))))))
+
+(defmethod install-signal-handlers ((service service))
+  (setf (signal-handler-thread service)
+        (sb-thread:make-thread
+         (lambda ()
+           (loop
+             for signal = (chanl:recv (signal-queue service))
+             ;; write this command to the control socket
+             do (when (eql :quit signal)
+                  (return nil))
+             do (let ((socket (make-instance 'sb-bsd-sockets:local-socket :type :stream)))
+                  (sb-bsd-sockets:socket-connect socket (namestring (control-socket-filename service)))
+                  (unwind-protect
+                       (write-string (ecase signal
+                                       ((#.sb-posix:sigabrt #.sb-posix:sigterm)
+                                        "[\"stop\"]")
+                                       (#.sb-posix:sigint
+                                        "[\"kill\"]")
+                                       (#.sb-posix:sighup
+                                        "[\"reload\"]"))
+                                     (flexi-streams:make-flexi-stream
+                                      (sb-bsd-sockets:socket-make-stream socket :input t
+                                                                                :output t
+                                                                                :buffering :full
+                                                                                :element-type '(unsigned-byte 8))
+                                      :external-format :utf-8))
+                    (sb-bsd-sockets:socket-close socket)))))
+         :name "CL-SERVICE signal handling loop"))
+  (flet ((enable (signo)
+           (sb-sys:enable-interrupt signo
+                                    (lambda (signo context info)
+                                      (declare (ignore context info))
+                                      (chanl:send (signal-queue service) signo)))))
+    (enable sb-posix:sigterm)
+    (enable sb-posix:sigabrt)
+    (enable sb-posix:sighup)
+    (enable sb-posix:sigint)))
 
 (defgeneric open-log-stream (service))
 
@@ -210,39 +263,44 @@
 ;;;; The super simple control server
 
 (defun run-json-server (socket-filename handler)
-  (let ((server-socket (make-instance 'sb-bsd-sockets:local-socket :type :stream)))
-    (sb-bsd-sockets:socket-bind server-socket socket-filename)
-    (sb-bsd-sockets:socket-listen server-socket 256)
-    (sb-thread:make-thread
-     (lambda ()
-       (loop
-         with shutdown = nil
-         until shutdown
-         for socket = (sb-bsd-sockets:socket-accept server-socket)
-         for binary-stream = (sb-bsd-sockets:socket-make-stream socket
-                                                                :input t
-                                                                :output t
-                                                                :buffering :full
-                                                                :timeout 1
-                                                                :auto-close t
-                                                                :element-type '(unsigned-byte 8))
-         for text-stream = (flexi-streams:make-flexi-stream binary-stream :external-format :utf-8)
-         do (unwind-protect
-                 (handler-case
-                     (let ((input (yason:parse text-stream
-                                               :object-as :hash-table
-                                               :json-arrays-as-vectors t
-                                               :json-booleans-as-symbols nil
-                                               :json-nulls-as-keyword t
-                                               :object-key-fn 'identity)))
-                       (multiple-value-bind (output done-p)
-                           (funcall handler input)
-                         (setf shutdown done-p)
-                         (yason:encode output text-stream)))
-                   (error (e)
-                     (yason:with-output (text-stream)
-                       (yason:with-object ()
-                         (yason:encode-object-element "status" "error")
-                         (yason:encode-object-element "error" (princ-to-string e)))))))
-            (close text-stream)))
-     :name "CL-SERVICE control server")))
+  (loop
+    with server-socket = (make-instance 'sb-bsd-sockets:local-socket :type :stream)
+    initially (sb-bsd-sockets:socket-bind server-socket socket-filename)
+    initially (sb-bsd-sockets:socket-listen server-socket 256)
+    with shutdown = nil
+    until shutdown
+    for socket = (sb-bsd-sockets:socket-accept server-socket)
+    for binary-stream = (sb-bsd-sockets:socket-make-stream socket
+                                                           :input t
+                                                           :output t
+                                                           :buffering :full
+                                                           :timeout 1
+                                                           :auto-close t
+                                                           :element-type '(unsigned-byte 8))
+    for text-stream = (flexi-streams:make-flexi-stream binary-stream :external-format :utf-8)
+    do (unwind-protect
+            (handler-case
+                (let ((input (yason:parse text-stream
+                                          :object-as :hash-table
+                                          :json-arrays-as-vectors t
+                                          :json-booleans-as-symbols nil
+                                          :json-nulls-as-keyword t
+                                          :object-key-fn 'identity)))
+                  (multiple-value-bind (output done-p)
+                      (funcall handler input)
+                    (setf shutdown done-p)
+                    (yason:encode output text-stream)))
+              (error (e)
+                (handler-case
+                    (yason:with-output (text-stream)
+                      (yason:with-object ()
+                        (yason:encode-object-element "status" "error")
+                        (yason:encode-object-element "error" (princ-to-string e))))
+                  (error (nested-e)
+                    (ignore-errors
+                     (format *error-output* "Nested errors in run-json-server: ~S,~S" e nested-e))))))
+         (ignore-errors
+          ;; the stream may or may not still be open, the client may or may not still be
+          ;; functional. as far as the json server is concerned it doesn't matter if this call
+          ;; succeeds or not, as long as we don't leak file descriptors we're really ok.
+          (close text-stream)))))
