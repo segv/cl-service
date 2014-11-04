@@ -5,5 +5,6 @@
                :alexandria
                :sb-posix
                :yason)
-  :components ((:file "packages")
-               (:file "cl-service" :depends-on ("packages"))))
+  :components ((:module :src
+                :components ((:file "packages")
+                             (:file "cl-service" :depends-on ("packages"))))))
