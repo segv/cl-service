@@ -1,5 +1,6 @@
 (asdf:defsystem :cl-service
-  :depends-on (:sb-daemon
+  :depends-on (:chanl
+               :sb-daemon
                :flexi-streams
                :alexandria
                :sb-posix
