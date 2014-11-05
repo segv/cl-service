@@ -1,0 +1,11 @@
+(in-package :cl-service)
+
+(defmethod install-signal-handlers ((service service))
+  (flet ((enable-signal (signo event-name)
+           (sb-sys:enable-interrupt signo (lambda (signo context info)
+                                            (declare (ignore signo context info))
+                                            (trigger-event service event-name :arguments '() :wait-p nil)))))
+    (enable-signal sb-posix:sigterm "stop")
+    (enable-signal sb-posix:sigabrt "stop")
+    (enable-signal sb-posix:sighup  "reload")
+    (enable-signal sb-posix:sigint  "kill")))

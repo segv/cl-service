@@ -2,50 +2,346 @@
 Marco Baringer
 <mb@bese.it>
 
-A PROTOTYPE (I can not stress that word enough) library for running
-lisp applications following the "conventions" (ha ha ha) of unix
-services.
+== Caveat Emptor
 
-== Getting Started
+This is a PROTOTYPE. Call it an experiment. I don't know if the whole
+idea, let alone this particular implementation of the idea, is worth
+pursuing. The only way to see if the idea is good or not is to build
+it and use it.
 
-Checkout the code into your local-projects directory (since this isn't on quicklisp):
+here goes nothing...
+
+== Overview
+
++cl-service+ aims to assist with deploying and running lisp
+applications on unix systems (or anywhere where threaded sbcls and
+posix file locks work).
+
++cl-service+ implements or assists with the following:
+
+1. Starting a lisp process in the background (via sb-daemon).
+2. Ensuring, via a file system lock, that at most one instance of the daemon is running at any given time.
+3. Writing the process' pid to a file to be used by monitoring programs (nagios, monit, etc.).
+4. Redirecting output streams to a log file or log rotation process.
+5. Handling the standard unix signals (+HUP+, +TERM+, +ABRT+ and +INT+).
+6. Reading control commands (stop, configure, status, etc.) from a unix socket over a well defined protocol.
+7. Relying on unix permissions to limit which users and processes can start, stop or otherwise control the application.
+
+== Configuration and Startup
+
+To start up an application via +cl-service+ we have to do 3 things: 1)
+tell it what file to use as a pidfile (and therefore which file's lock
+to use to ensure our application runs exactly once); 2) tell it what
+file (socket) to bind the control server to; and 3) call
++cl-service:start+ specifying if we want to daemonize, install the
+signal handlers and/or setup the control server. In the simplest case
+we can do all of this via a script:
+
+--------------------------------
+#!/usr/local/bin/sbcl --script
+(asdf:load-sytem :the-application)
+(setf (cl-service:name) "just-another-server"
+      (cl-service:run-directory) #p"/var/run/")
+(cl-service:on-start
+ (the-application:start-server-and-stuff))
+(cl-service:start)
+--------------------------------
+
+If instead of a startup script you have an image with a toplevel
+function (because you're using buildapp or cl-launch) you can delay
+the configuration of cl-service until startup time by setting an
++on-load+ handler. Somewhere in your code include this:
+
+--------------------------------
+(cl-service:on-load
+  ...app configuration...
+  (setf (cl-service:name) "just-another-server"
+        (cl-service:run-directory) #p"/var/run/"))
+--------------------------------
+
+And then just use +cl-service:start+ as your toplevel function (by
+default it will daemonize and then block until the service is
+shutdown, so it should work fine as a toplevel function).
+
+== Triggering Events
+
+There are two ways to trigger events, by default both mechanisms are
+enabled, but if you've called +start+ with +:with-signal-handlers
+nil+ or +:with-control-server nil+ obviously you won't that channel
+available.
+
+=== Via Signals
+
+Use the pidfile to get the process' pid, or use the +pid+ property
+from the status message, to send one of +SIGHUP+, +SIGABRT+, +SIGTERM+
+or +SIGINT+ to the process. +SIGHUP+ will trigger a +reconfigure+ event,
++SIGABRT+ and +SIGTERM+ trigger +stop+ events, and +SIGINT+ triggers a
++kill+ event.
+
+Example:
 
 ----
-$ cd ~/quicklisp/local-projects/; git clone https://github.com/segv/cl-service;
+$ kill -TERM `cat /var/run/my-app.pid`
 ----
 
-Somewhere in your code create a service class:
+=== Via the Control Socket
+
+Send a json encoded array, as utf-8 encoded text, to the
+socket. You'll get a json encoded object back. Though in the case of
+the +kill+ message, depending on the exact ordering of the various
+events, the socket may or may not be closed before the response is
+written to it.
+
+All commands are arrays whose first element is a string naming an
+event and whose second element is an object with event's
+parameters. See the next section for details.
+
+Example:
 
 ----
-(defclass my-package::service (cl-service:service)
-  ()
-  (:default-initargs
-   :name "THE NAME OF MY SERVICE"
-   :pid-filename "/var/run/my-service.pid"
-   :control-socket-filename "/var/run/my-service.socket"
-   :error-handler 'cl-service:log-and-die))
+$ echo '["stop"]' | socat unix-connect:/var/run/my-app.control -
 ----
 
-In your start-up script (which is not provided by cl-service) call 
+== Events
+
++cl-service+ sits in an infinite loop and, when your app isn't doing
+other more important things, it listens for and responds to certain
+events:
+
++stop+:: Stop the application cleanly. Can be triggered by sending the
+         process the +TERM+ signal or by sending the stop command
+         (json string +["stop"]+) to the control server. Users of +cl-service+ can
+         define their own shutdown code by calling
+         +cl-service:on-stop+, note however that +cl-service+ will
+         always call +sb-ext:exit+ after calling the user code (there
+         is no way to "decline" a stop event).
+
++kill+:: A faster and more brutal version of stop. Triggered via the
+         json string +["kill"]+ or an +INT+ signal.
+
++load+:: No predefined behaviour. Is triggered very early in the
+         startup cycle (before we even fork and before we grab the
+         pid-file lock). The default handler for the +reload+ event
+         will trigger this event as well.
+
++reload+:: By default just triggers a load event. Triggered via the
+           signal +HUP+ or the command +["reload"]+.
+
++status+:: Retunrs the application's pid, control-socket location, and
+           uptime (in seconds) as a json object. Triggered via the command
+           +["status"]+.
+
++create-swank-server+:: Creates a swank server. Triggered via the
+                        command
+                        +["create-swank-server",{"port":PORT}]+. +PORT+
+                        is optional.
+
++eval+:: Evaluates some code (inputted as a string). Command is
+         +["eval", { form: STRING, forms: ARRAY-OF-STRINGS, package:
+         STRING }]+, +forms+ and +package+ are both optional.
+
+=== Custom Events
+
+The simplest way is to just call +(setf cl-service:on-event)+ directly:
 
 ----
-(cl-service:start 'my-package::service)
+(setf (cl-service:on-event "backup")
+      (lambda (&key directory)
+        (app:do-backup-to directory)
+        '()))
 ----
 
-Send requests to the service via the control socket:
+If however you're going to be doing this a lot and you want the
++on-WHATEVER+ syntax, you can also do it in two steps:
 
 ----
-$ echo '["stop"]' | socat unix-connect:/var/run/my-service.socket STDIO
+(cl-service:def-event-setter cl-service::on-backup "backup")
 ----
 
-Replace +"stop"+ with +"kill"+ or +"status"+.
+And this in your init/configuration code:
+
+----
+(cl-service::on-backup
+  (my-app:do-backup-to (getf cl-service:*arguments* :directory))
+  '())
+----
+
+It is important that, no matter how you install the event handler,
+your code returns a plist of strings to strings (the control assumes
+that and uses the structure to return a json object).
+
+You can trigger this event by passing some json on the control socket:
+
+----
+echo "[\"backup\", { \"directory\": \"/var/backups/app/`date -Iseconds`/\" }]" \
+  | socat unix-connect:/var/run/my-app -
+----
+
+== Avoiding Hard Coded Filenames
+
+There is something of a chicken-and-egg problem when it comes to
+starting a process. One the one hand we don't want to just hard code
+file locations into our progrem, but one the other hand configuration
+usually comes _after_ start up, but _before_ start up we already need
+to know where to store the pidfile and where to bind the control
+socket, these are things that we usually discover only _after_ the
+configuration phase.
+
+Because of this +cl-service+ views application startup as consisting
+of a number of seperate phases:
+
+1. (this phase isn't under +cl-service+'s control) loading the
+image. This loads up the image file and any code and data built into it.
+
+2. loading and configuring the application code. in the case of a
+pre-build image loading may be a no-op, while during development mode
+this may call +asdf:load-system+ and recompile any changed
+files. parsing of the configuration files, and calling the
+corresponding +cl-service+ functions, is also done during this phase.
++
+Note that this phase is run before we have daemonized and acquired the
+file lock.
+
+3. starting the application. this is when we actually start up servers,
+connect to the database, warm up caches, etc. this is done after we've
+already daemonized the process (if we're daemonizing), after we've
+grabbed the lock on the pid file (or failed trying), etc.
+
+Hard coding the pidfile and control socket filename is actually a
+perfectly reasonable thing to do, however if an application wants to
+allow these values to be set in configuration files, here's how it
+should do that:
+
+1. Put the code required to load and configure our application in the
+handler for the +load+ event:
++
+----
+(cl-service:on-load
+  (asdf:load-system :the-application)
+  (the-application:parse-configuration-file)
+  (setf (cl-service:name) "just-another-server"
+        (cl-service:run-directory) (the-application:get-run-directory)))
+----
+2. Leave the code to actually start the application, which can now
+assume that it has already been configured, in the handler for the
++start+ event:
++
+----
+(cl-service:on-start
+  (the-application:start-server-and-stuff))
+----
+
+Of course, now replaced one hard coded thing, the pathname of the
+run-directory, with another hard coded thing, the filename of the
+configuration file. oh, the irony!
+
+If you really want to have nothing hard coded into the application
+itself, which is a worthy goal, you're going to have to pass the
+location of the configuration file to the startup script, either via a
+command line parameter or an environment variable or something, and
+use that value as the starting point in your +configure+ event
+handler.
+
+So you're start-up script would become:
+
+----
+#!/usr/local/bin/sbcl --script
+(asdf:load-system :cl-service)
+(cl-service:on-load
+  (asdf:load-system :app)
+  (app:load-configuration (or (second sb-ext:*posix-argv*) #p"/etc/app.conf"))
+  (setf (cl-service:run-directory) (app:get-run-directory)))
+(cl-service:start)
+----
+
+There is one more problem (the problems seem to never end). Our
+start-up script, as written, can't be loaded because we can't read the
++cl-service:on-load+ form since it references packages that don't
+exist until +asdf:load-system+ :app has been evaluated. Given that
+this is a pain and it seems to come up a lot, +cl-service+ will treat
+strings passed to +on-load+, +on-start+, etc. specially: it will read
+and eval them one at a time. This allows us to write our start up
+script like so:
+
+----
+#!/usr/local/bin/sbcl --script
+(asdf:load-system :cl-service)
+(cl-service:on-load
+  "(asdf:load-system :app)"
+  "(app:load-configuration (or (second sb-ext:*posix-argv*) #p\"/etc/app.conf\"))"
+  "(setf (cl-service:run-directory) (app:get-run-directory))")
+(cl-service:on-start
+  "(app:startup)")
+(cl-service:start)
+----
+
+Finally. Couldn't be easier, right? right? 
+
+== Extending
+
+The normal API all assumes the existence of a global +*service*+
+object, all the user exposed API calls translate, almost directly,
+into methods called on the +*service*+ object. If you need to change
+some internal behaviour of +cl-service+, and don't want to just patch
+the code directly, you can set +cl-service:*service*+ before running
+any +cl-service+ code and implement whatever methods you need.
+
+== Examples
+
+A start.lisp script:
+
+----
+#!/usr/local/bin/sbcl --script
+(asdf:load-system :cl-service)
+(cl-service:on-load "
+  (asdf:load-system :my-application)
+  (my-application:configure)
+  (setf (cl-service:run-directory) (my-application:get-configuration \"run-directory\"))
+")
+(cl-service:on-stop "
+  (my-application:shutdown-everything)
+")
+(cl-service:start)
+----
+
+A shutdown script:
+
+----
+#!/bin/bash
+
+echo '["stop"]' | socat unix-connect:/var/run/my-application.socket -
+----
+
+Pretty printing the uptime:
+
+----
+#!/bin/bash
+
+echo '["status"]' | socat unix-connect:/var/run/my-application.socket - | jq .uptime
+----
+
+Defining, and calling, a backup command:
+
+----
+(setf (cl-service:on-event "backup")
+      (lambda (&key directory)
+        (my-application:backup :directory (cl-fad:pathname-as-directory (pathname directory)))))
+----
+
+----
+#!/bin/bash
+
+echo '["backup",{"directory":"/var/backups/my-app/"}]' \
+  | socat unix-connect:/var/run/my-application.socket - \
+  | jq .
+----
 
 == NOTES
 
-Other than the fact that this whole thing is an EXPERIMENT and I have
-no idea if the idea itself, let alone this particular implementation
-of the idea, is worth following, there are some especially annoying
-things about this library:
-
 . Very very sbcl-only.
+. I just don't like pidfiles. Something about "just read this file and
+presume that its still up to date, with no way to check" just rubs me
+the wrong way. If want an accurate pid ask the system, via +fcntl(2)+
+for the pid of the process that holds the lock on the pidfile itself,
+just ignore its contents.
 
