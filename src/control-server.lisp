@@ -93,8 +93,7 @@
                     (let ((*package* (find-package :cl-service.empty-package)))
                       (format nil "~S" object)))
                   (object-class-name (object)
-                    (to-string (class-name (class-of object)))
-                    ))
+                    (to-string (class-name (class-of object)))))
            (handler-case
                (let ((value (trigger-event service event-name :arguments arguments :wait-p t)))
                  (if (event-error-p value)
@@ -106,7 +105,7 @@
                           "backtrace" (to-string (backtrace-of value)))
                      (apply #'ok value)))
              (error (e)
-               (err "code" code
+               (err "code" "error-handling-error"
                     "type" (object-class-name e)
                     "exception" (handler-case
                                     (format nil "~S" e)
