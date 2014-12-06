@@ -126,4 +126,6 @@
          (process-event service
                         (first event)
                         (second event)
-                        (third event))))))
+                        (third event)))
+        (else
+         (sleep 0.1)))))
